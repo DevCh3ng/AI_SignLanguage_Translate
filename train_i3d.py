@@ -198,7 +198,7 @@ if __name__ == '__main__':
     save_model = 'checkpoints/'
     train_split = 'preprocess/nslt_2000.json'
 
-    weights = 'checkpoints/NSLT_2000_0.74258.pt'
+    weights = '' # starts with no weights, but would use weights from /checkpoints if the training process is interrupted
     config_file = 'configfiles/asl2000.ini'
 
     configs = Config(config_file)
