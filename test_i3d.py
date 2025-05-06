@@ -1,4 +1,3 @@
-import math
 import os
 import torch
 import torch.nn as nn
@@ -31,10 +30,11 @@ def Eval(model, dataloader, num_class, device):
     correct_top10 = 0
 
     tp_top1 = np.zeros(num_class, dtype=np.int64)
-    fp_top1 = np.zeros(num_class, dtype=np.int64)
     tp_top5 = np.zeros(num_class, dtype=np.int64)
-    fp_top5 = np.zeros(num_class, dtype=np.int64)
     tp_top10 = np.zeros(num_class, dtype=np.int64)
+
+    fp_top1 = np.zeros(num_class, dtype=np.int64)
+    fp_top5 = np.zeros(num_class, dtype=np.int64)
     fp_top10 = np.zeros(num_class, dtype=np.int64)
 
     processed_samples = 0
@@ -55,23 +55,23 @@ def Eval(model, dataloader, num_class, device):
             _, out_labels = torch.sort(predictions[0], descending=True)
             out_labels = out_labels.cpu().numpy()
 
-            is_correct_top1 = (out_labels[0] == label_item)
-            is_correct_top5 = label_item in out_labels[:5]
-            is_correct_top10 = label_item in out_labels[:10]
+            correct_top1 = (out_labels[0] == label_item)
+            correct_top5 = label_item in out_labels[:5]
+            correct_top10 = label_item in out_labels[:10]
 
-            if is_correct_top1:
+            if correct_top1:
                 correct_top1 += 1
                 tp_top1[label_item] += 1
             else:
                 fp_top1[label_item] += 1
 
-            if is_correct_top5:
+            if correct_top5:
                 correct_top5 += 1
                 tp_top5[label_item] += 1
             else:
                 fp_top5[label_item] += 1
 
-            if is_correct_top10:
+            if correct_top10:
                 correct_top10 += 1
                 tp_top10[label_item] += 1
             else:
@@ -100,11 +100,7 @@ def run(mode='', root='', train_split='', weights=''):
                                                  shuffle=False, num_workers=2,
                                                  pin_memory=False)
 
-    model = Setup(mode=mode,
-                weights_path=weights,
-                num_class=num_classes,
-                device=device)
-
+    model = Setup(mode=mode, weights_path=weights, num_class=num_classes, device=device)
     if model is None:
         print("Model setup failed.")
         return
@@ -118,5 +114,5 @@ if __name__ == '__main__':
     mode = 'rgb'
     root = 'data/WLASL2000'
     train_split = 'configfiles/data_split.json'
-    weights = 'weights/NSLT_2000_0.74258.pt' #best 76.22%
+    weights = 'weights/SLT_2000_0.7622.pt' #best 76.22%
     run(mode=mode, root=root, train_split=train_split, weights=weights)

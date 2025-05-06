@@ -26,7 +26,7 @@ mode = 'rgb'
 root = {'word': 'data/WLASL2000'}
 save_model = 'checkpoints/'
 train_split = 'configfiles/data_split.json' 
-weights = 'weights/nslt_2000_002276_0.469771.pt' # starts with no weights, but would use weights from /checkpoints if training process is interrupted
+weights = 'weights/SLT_2000_0.7622.pt' # starts with no weights, but would use weights from /checkpoints if training process is interrupted
 config_file = 'configfiles/conf.ini'
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 configs = Config(config_file)
@@ -74,14 +74,12 @@ lr = configs.init_lr
 weight_decay = configs.adam_weight_decay
 optimizer = optim.Adam(i3d.parameters(), lr=lr, weight_decay=weight_decay)
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=5, factor=0.3, verbose=True)
-
-num_steps_per_update = configs.update_per_step
+steps_per_update = configs.update_per_step
 steps = 0
 epoch = 0
 max_epochs = 400
-
-best_val_score = 0.0
-best_val_loss = float('inf')
+best_score = 0.0
+best_loss = float('inf')
 early_stopping_patience = 10
 patience_counter = 0
 
@@ -102,15 +100,15 @@ while steps < configs.max_steps and epoch < max_epochs:
         else:
             i3d.train(False)
 
-        tot_loss_accum = 0.0
-        tot_loc_loss_accum = 0.0
-        tot_cls_loss_accum = 0.0
+        Sloss = 0.0
+        S_loc_loss = 0.0
+        S_cls_loss = 0.0
         num_iter = 0
 
-        running_loc_loss = 0.0
-        running_cls_loss = 0.0
+        run_loc_loss = 0.0
+        run_cls_loss = 0.0
         running_corrects = 0
-        total_samples_in_epoch = 0
+        total_samples = 0
 
         optimizer.zero_grad()
         confusion_matrix = np.zeros((num_classes, num_classes), dtype=np.int64)
@@ -126,20 +124,20 @@ while steps < configs.max_steps and epoch < max_epochs:
             t = inputs.size(2)
             labels = labels.to(device, non_blocking=True)
             current_batch_size = inputs.shape[0]
-            total_samples_in_epoch += current_batch_size
+            total_samples += current_batch_size
 
             with torch.set_grad_enabled(phase == 'train'):
                 per_frame_logits = i3d(inputs, pretrained=False)
                 per_frame_logits = F.interpolate(per_frame_logits, t, mode='linear', align_corners=False)
 
                 loc_loss = F.binary_cross_entropy_with_logits(per_frame_logits, labels)
-                running_loc_loss += loc_loss.item() * current_batch_size
+                run_loc_loss += loc_loss.item() * current_batch_size
 
                 max_logits = torch.max(per_frame_logits, dim=2)[0]
                 max_labels = torch.max(labels, dim=2)[0]
 
                 cls_loss = F.binary_cross_entropy_with_logits(max_logits, max_labels)
-                running_cls_loss += cls_loss.item() * current_batch_size
+                run_cls_loss += cls_loss.item() * current_batch_size
 
                 pred_indices_cm = torch.argmax(max_logits, dim=1)
                 true_indices_cm = torch.argmax(max_labels, dim=1)
@@ -150,14 +148,14 @@ while steps < configs.max_steps and epoch < max_epochs:
                 loss = (0.5 * loc_loss + 0.5 * cls_loss)
 
                 if phase == 'train':
-                    scaled_loss = loss / num_steps_per_update
+                    scaled_loss = loss / steps_per_update
                     scaled_loss.backward()
 
-                    tot_loss_accum += loss.item() / num_steps_per_update
-                    tot_loc_loss_accum += loc_loss.item()
-                    tot_cls_loss_accum += cls_loss.item()
+                    Sloss += loss.item() / steps_per_update
+                    S_loc_loss += loc_loss.item()
+                    S_cls_loss += cls_loss.item()
 
-                    if num_iter == num_steps_per_update:
+                    if num_iter == steps_per_update:
                         steps += 1
                         optimizer.step()
                         optimizer.zero_grad()
@@ -165,44 +163,44 @@ while steps < configs.max_steps and epoch < max_epochs:
                         if steps % 10 == 0:
                             current_cm_sum = np.sum(confusion_matrix)
                             acc = float(np.trace(confusion_matrix)) / current_cm_sum if current_cm_sum > 0 else 0.0
-                            print(f"Epoch {epoch}, Step {steps}: Loc Loss: {tot_loc_loss_accum / num_steps_per_update:.4f} "
-                                f"Cls Loss: {tot_cls_loss_accum / num_steps_per_update:.4f} "
-                                f"Tot Loss: {tot_loss_accum:.4f} Accu: {acc:.4f}", flush=True)
-                            tot_loss_accum = tot_loc_loss_accum = tot_cls_loss_accum = 0.
+                            print(f"Epoch {epoch}, Step {steps}: Loc Loss: {S_loc_loss / steps_per_update:.4f} "
+                                f"Cls Loss: {S_cls_loss / steps_per_update:.4f} "
+                                f"Tot Loss: {Sloss:.4f} Accu: {acc:.4f}", flush=True)
+                            Sloss = S_loc_loss = S_cls_loss = 0.
                         num_iter = 0
 
-        epoch_loss_val = (running_loc_loss + running_cls_loss) * 0.5 / total_samples_in_epoch if total_samples_in_epoch > 0 else 0
-        epoch_loc_loss_val = running_loc_loss / total_samples_in_epoch if total_samples_in_epoch > 0 else 0
-        epoch_cls_loss_val = running_cls_loss / total_samples_in_epoch if total_samples_in_epoch > 0 else 0
-        epoch_acc_val = float(running_corrects) / total_samples_in_epoch if total_samples_in_epoch > 0 else 0.0
-        epoch_cm_sum = np.sum(confusion_matrix)
-        epoch_acc_cm_val = float(np.trace(confusion_matrix)) / epoch_cm_sum if epoch_cm_sum > 0 else 0.0
+        epoch_loss = (run_loc_loss + run_cls_loss) * 0.5 / total_samples if total_samples > 0 else 0
+        epoch_loc_loss = run_loc_loss / total_samples if total_samples > 0 else 0
+        epoch_cls_loss = run_cls_loss / total_samples if total_samples > 0 else 0
+        epoch_accu = float(running_corrects) / total_samples if total_samples > 0 else 0.0
+        Sepoch_cm = np.sum(confusion_matrix)
+        epoch_acc_cm = float(np.trace(confusion_matrix)) / Sepoch_cm if Sepoch_cm > 0 else 0.0
 
         if phase == 'train':
-            loss_hist.append(epoch_loss_val)
-            train_acc_history.append(epoch_acc_val)
+            loss_hist.append(epoch_loss)
+            train_acc_history.append(epoch_accu)
 
         if phase == 'test':
-            val_score = epoch_acc_cm_val
-            val_loss = epoch_loss_val
+            val_score = epoch_acc_cm
+            val_loss = epoch_loss
             val_loss_history.append(val_loss)
             val_acc_history.append(val_score)
 
-            print(f"VALIDATION - Epoch {epoch}: Loc Loss: {epoch_loc_loss_val:.4f} "
-                    f"Cls Loss: {epoch_cls_loss_val:.4f} "
+            print(f"VALIDATION - Epoch {epoch}: Loc Loss: {epoch_loc_loss:.4f} "
+                    f"Cls Loss: {epoch_cls_loss:.4f} "
                     f"Tot Loss: {val_loss:.4f} "
                     f"Accuracy: {val_score:.4f}", flush=True)
 
             scheduler.step(val_loss)
 
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
+            if val_loss < best_loss:
+                best_loss = val_loss
                 patience_counter = 0
 
-                if val_score > best_val_score or epoch % 2 == 0:
-                        if val_score > best_val_score:
-                            best_val_score = val_score
-                        model_name = os.path.join(save_model, f"nslt_{str(num_classes)}_{str(steps).zfill(6)}_{val_score:.4f}.pt")
+                if val_score > best_score or epoch % 2 == 0:
+                        if val_score > best_score:
+                            best_score = val_score
+                        model_name = os.path.join(save_model, f"slt_{str(num_classes)}_{str(steps).zfill(6)}_{val_score:.4f}.pt")
                         torch.save(i3d.module.state_dict() if isinstance(i3d, nn.DataParallel) else i3d.state_dict(), model_name)
                         print(f"Model saved: {model_name}")
             else:

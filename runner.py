@@ -1,13 +1,14 @@
 import cv2
 import torch
 import numpy as np
-from pytorch_i3d import InceptionI3d
 import os
 import re
 import time
 import requests
 import json
+
 from requests.exceptions import RequestException
+from pytorch_i3d import InceptionI3d
 from dotenv import load_dotenv
 
 load_dotenv()
