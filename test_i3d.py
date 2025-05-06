@@ -1,267 +1,122 @@
 import math
 import os
-import argparse
-
-import matplotlib.pyplot as plt
-
 import torch
 import torch.nn as nn
-
-from torchvision import transforms
-import videotransforms
-
+import dataset_helper.videotransforms as vt
 import numpy as np
 
-import torch.nn.functional as F
 from pytorch_i3d import InceptionI3d
-
-from datasets.nslt_dataset_all import NSLT as Dataset
-import cv2
-
+from dataset_helper.dataset_utils1 import Utils as Dataset
+from torchvision import transforms
 
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 os.environ["CUDA_VISIBLE_DEVICES"] = '0'
-parser = argparse.ArgumentParser()
-parser.add_argument('-mode', type=str, help='rgb or flow')
-parser.add_argument('-save_model', type=str)
-parser.add_argument('-root', type=str)
+IMG_SIZE = 224
+CLASSES = 400
+DEFAULT_SEGMENT_LENGTH = 64
+num_classes = 2000
 
-args = parser.parse_args()
+def Setup(mode, weights_path, num_class, device):
+    model = InceptionI3d(CLASSES, in_channels=3)
+    model.replace_logits(num_class)
+    model.load_state_dict(torch.load(weights_path, map_location=device))
+    model = model.to(device)
+    if torch.cuda.device_count() > 1:
+        model = nn.DataParallel(model)
+    model.eval()
+    return model
+def Eval(model, dataloader, num_class, device):
+    correct_top1 = 0
+    correct_top5 = 0
+    correct_top10 = 0
 
+    tp_top1 = np.zeros(num_class, dtype=np.int64)
+    fp_top1 = np.zeros(num_class, dtype=np.int64)
+    tp_top5 = np.zeros(num_class, dtype=np.int64)
+    fp_top5 = np.zeros(num_class, dtype=np.int64)
+    tp_top10 = np.zeros(num_class, dtype=np.int64)
+    fp_top10 = np.zeros(num_class, dtype=np.int64)
 
-def load_rgb_frames_from_video(video_path, start=0, num=-1):
-    vidcap = cv2.VideoCapture(video_path)
+    processed_samples = 0
+    with torch.no_grad():
+        for i, data in enumerate(dataloader):
+            inputs, labels, video_ids = data
+            inputs = inputs.to(device)
+            labels = labels.to(device)
+            batch_size, _, _, _, _ = inputs.shape
 
-    frames = []
-
-    vidcap.set(cv2.CAP_PROP_POS_FRAMES, start)
-    if num == -1:
-        num = int(vidcap.get(cv2.CAP_PROP_FRAME_COUNT))
-
-    for offset in range(num):
-        success, img = vidcap.read()
-
-        w, h, c = img.shape
-        sc = 224 / w
-        img = cv2.resize(img, dsize=(0, 0), fx=sc, fy=sc)
-
-        img = (img / 255.) * 2 - 1
-
-        frames.append(img)
-
-    return torch.Tensor(np.asarray(frames, dtype=np.float32))
-
-
-def run(init_lr=0.1,
-        max_steps=64e3,
-        mode='rgb',
-        root='/ssd/Charades_v1_rgb',
-        train_split='charades/charades.json',
-        batch_size=3 * 15,
-        save_model='',
-        weights=None):
-    # setup dataset
-    test_transforms = transforms.Compose([videotransforms.CenterCrop(224)])
-
-    val_dataset = Dataset(train_split, 'test', root, mode, test_transforms)
-    val_dataloader = torch.utils.data.DataLoader(val_dataset, batch_size=1,
-                                                 shuffle=False, num_workers=2,
-                                                 pin_memory=False)
-
-    dataloaders = {'test': val_dataloader}
-    datasets = {'test': val_dataset}
-
-    # setup the model
-    if mode == 'flow':
-        i3d = InceptionI3d(400, in_channels=2)
-        i3d.load_state_dict(torch.load('weights/flow_imagenet.pt'))
-    else:
-        i3d = InceptionI3d(400, in_channels=3)
-        i3d.load_state_dict(torch.load('weights/rgb_imagenet.pt'))
-    i3d.replace_logits(num_classes)
-    i3d.load_state_dict(torch.load(weights))  
-    i3d.cuda()
-    i3d = nn.DataParallel(i3d)
-    i3d.eval()
-
-    correct = 0
-    correct_5 = 0
-    correct_10 = 0
-
-    top1_fp = np.zeros(num_classes, dtype=np.int_)
-    top1_tp = np.zeros(num_classes, dtype=np.int_)
-
-    top5_fp = np.zeros(num_classes, dtype=np.int_)
-    top5_tp = np.zeros(num_classes, dtype=np.int_)
-
-    top10_fp = np.zeros(num_classes, dtype=np.int_)
-    top10_tp = np.zeros(num_classes, dtype=np.int_)
-
-    for data in dataloaders["test"]:
-        inputs, labels, video_id = data 
-
-        per_frame_logits = i3d(inputs)
-
-        predictions = torch.max(per_frame_logits, dim=2)[0]
-        out_labels = np.argsort(predictions.cpu().detach().numpy()[0])
-        out_probs = np.sort(predictions.cpu().detach().numpy()[0])
-
-        if labels[0].item() in out_labels[-5:]:
-            correct_5 += 1
-            top5_tp[labels[0].item()] += 1
-        else:
-            top5_fp[labels[0].item()] += 1
-        if labels[0].item() in out_labels[-10:]:
-            correct_10 += 1
-            top10_tp[labels[0].item()] += 1
-        else:
-            top10_fp[labels[0].item()] += 1
-        if torch.argmax(predictions[0]).item() == labels[0].item():
-            correct += 1
-            top1_tp[labels[0].item()] += 1
-        else:
-            top1_fp[labels[0].item()] += 1
-        print(video_id, float(correct) / len(dataloaders["test"]), float(correct_5) / len(dataloaders["test"]),
-              float(correct_10) / len(dataloaders["test"]))
-
-        # per-class accuracy
-    top1_per_class = np.mean(np.divide(top1_tp, top1_tp + top1_fp, where=(top1_tp + top1_fp) > 0, out=np.zeros_like(top1_tp, dtype=float)))
-    top5_per_class = np.mean(np.divide(top5_tp, top5_tp + top5_fp, where=(top5_tp + top5_fp) > 0, out=np.zeros_like(top5_tp, dtype=float)))
-    top10_per_class = np.mean(np.divide(top10_tp, top10_tp + top10_fp, where=(top10_tp + top10_fp) > 0, out=np.zeros_like(top10_tp, dtype=float)))
-
-    print('top-k average per class acc: {}, {}, {}'.format(top1_per_class, top5_per_class, top10_per_class))
-
-
-def ensemble(mode, root, train_split, weights, num_classes):
-    # setup dataset
-    test_transforms = transforms.Compose([videotransforms.CenterCrop(224)])
-    # test_transforms = transforms.Compose([])
-
-    val_dataset = Dataset(train_split, 'test', root, mode, test_transforms)
-    val_dataloader = torch.utils.data.DataLoader(val_dataset, batch_size=1,
-                                                 shuffle=False, num_workers=2,
-                                                 pin_memory=False)
-
-    dataloaders = {'test': val_dataloader}
-    datasets = {'test': val_dataset}
-
-    # setup the model
-    if mode == 'flow':
-        i3d = InceptionI3d(400, in_channels=2)
-        i3d.load_state_dict(torch.load('weights/flow_imagenet.pt'))
-    else:
-        i3d = InceptionI3d(400, in_channels=3)
-        i3d.load_state_dict(torch.load('weights/rgb_imagenet.pt'))
-    i3d.replace_logits(num_classes)
-    i3d.load_state_dict(torch.load(weights)) 
-    i3d.cuda()
-    i3d = nn.DataParallel(i3d)
-    i3d.eval()
-
-    correct = 0
-    correct_5 = 0
-    correct_10 = 0
-    # confusion_matrix = np.zeros((num_classes,num_classes), dtype=np.int_)
-
-    top1_fp = np.zeros(num_classes, dtype=np.int_)
-    top1_tp = np.zeros(num_classes, dtype=np.int_)
-
-    top5_fp = np.zeros(num_classes, dtype=np.int_)
-    top5_tp = np.zeros(num_classes, dtype=np.int_)
-
-    top10_fp = np.zeros(num_classes, dtype=np.int_)
-    top10_tp = np.zeros(num_classes, dtype=np.int_)
-
-    for data in dataloaders["test"]:
-        inputs, labels, video_id = data  # inputs: b, c, t, h, w
-
-        t = inputs.size(2)
-        num = 64
-        if t > num:
-            num_segments = math.floor(t / num)
-
-            segments = []
-            for k in range(num_segments):
-                segments.append(inputs[:, :, k*num: (k+1)*num, :, :])
-
-            segments = torch.cat(segments, dim=0)
-            per_frame_logits = i3d(segments)
-
+            per_frame_logits = model(inputs)
             predictions = torch.mean(per_frame_logits, dim=2)
 
-            if predictions.shape[0] > 1:
-                predictions = torch.mean(predictions, dim=0)
 
-        else:
-            per_frame_logits = i3d(inputs)
-            predictions = torch.mean(per_frame_logits, dim=2)[0]
+            video_id = video_ids[0]
+            label_item = labels[0].item()
 
-        out_labels = np.argsort(predictions.cpu().detach().numpy())
+            _, out_labels = torch.sort(predictions[0], descending=True)
+            out_labels = out_labels.cpu().numpy()
 
-        if labels[0].item() in out_labels[-5:]:
-            correct_5 += 1
-            top5_tp[labels[0].item()] += 1
-        else:
-            top5_fp[labels[0].item()] += 1
-        if labels[0].item() in out_labels[-10:]:
-            correct_10 += 1
-            top10_tp[labels[0].item()] += 1
-        else:
-            top10_fp[labels[0].item()] += 1
-        if torch.argmax(predictions).item() == labels[0].item():
-            correct += 1
-            top1_tp[labels[0].item()] += 1
-        else:
-            top1_fp[labels[0].item()] += 1
-        print(video_id, float(correct) / len(dataloaders["test"]), float(correct_5) / len(dataloaders["test"]),
-              float(correct_10) / len(dataloaders["test"]))
+            is_correct_top1 = (out_labels[0] == label_item)
+            is_correct_top5 = label_item in out_labels[:5]
+            is_correct_top10 = label_item in out_labels[:10]
 
-    top1_per_class = np.mean(np.divide(top1_tp, top1_tp + top1_fp, where=(top1_tp + top1_fp) > 0, out=np.zeros_like(top1_tp, dtype=float)))
-    top5_per_class = np.mean(np.divide(top5_tp, top5_tp + top5_fp, where=(top5_tp + top5_fp) > 0, out=np.zeros_like(top5_tp, dtype=float)))
-    top10_per_class = np.mean(np.divide(top10_tp, top10_tp + top10_fp, where=(top10_tp + top10_fp) > 0, out=np.zeros_like(top10_tp, dtype=float)))
+            if is_correct_top1:
+                correct_top1 += 1
+                tp_top1[label_item] += 1
+            else:
+                fp_top1[label_item] += 1
 
-    print('top-k average per class acc: {}, {}, {}'.format(top1_per_class, top5_per_class, top10_per_class))
+            if is_correct_top5:
+                correct_top5 += 1
+                tp_top5[label_item] += 1
+            else:
+                fp_top5[label_item] += 1
 
+            if is_correct_top10:
+                correct_top10 += 1
+                tp_top10[label_item] += 1
+            else:
+                fp_top10[label_item] += 1
 
-def run_on_tensor(weights, ip_tensor, num_classes):
-    i3d = InceptionI3d(400, in_channels=3)
-    # i3d.load_state_dict(torch.load('models/rgb_imagenet.pt'))
+            processed_samples += batch_size
 
-    i3d.replace_logits(num_classes)
-    i3d.load_state_dict(torch.load(weights)) 
-    i3d.cuda()
-    i3d = nn.DataParallel(i3d)
-    i3d.eval()
+            print(f"{video_id} {float(correct_top1) / processed_samples:.8f} {float(correct_top5) / processed_samples:.8f} {float(correct_top10) / processed_samples:.8f}")
 
-    t = ip_tensor.shape[2]
-    ip_tensor.cuda()
-    per_frame_logits = i3d(ip_tensor)
+    denom_1 = tp_top1 + fp_top1
+    denom_5 = tp_top5 + fp_top5
+    denom_10 = tp_top10 + fp_top10
 
-    predictions = F.upsample(per_frame_logits, t, mode='linear')
+    mca_top1 = np.mean(np.divide(tp_top1, denom_1, where=denom_1 > 0, out=np.zeros_like(tp_top1, dtype=float)))
+    mca_top5 = np.mean(np.divide(tp_top5, denom_5, where=denom_5 > 0, out=np.zeros_like(tp_top5, dtype=float)))
+    mca_top10 = np.mean(np.divide(tp_top10, denom_10, where=denom_10 > 0, out=np.zeros_like(tp_top10, dtype=float)))
 
-    predictions = predictions.transpose(2, 1)
-    out_labels = np.argsort(predictions.cpu().detach().numpy()[0])
+    print(f'top-k average per class acc: {mca_top1:.8f}, {mca_top5:.8f}, {mca_top10:.8f}')
 
-    arr = predictions.cpu().detach().numpy()[0,:,0].T
+def run(mode='', root='', train_split='', weights=''):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    test_transforms = transforms.Compose([vt.CenterCrop(IMG_SIZE)])
+    val_dataset = Dataset(split_file=train_split, split='test', root=root, mode=mode, transforms=test_transforms)
 
-    plt.plot(range(len(arr)), F.softmax(torch.from_numpy(arr), dim=0).numpy())
-    plt.show()
+    val_dataloader = torch.utils.data.DataLoader(val_dataset, batch_size=1,
+                                                 shuffle=False, num_workers=2,
+                                                 pin_memory=False)
 
-    return out_labels
+    model = Setup(mode=mode,
+                weights_path=weights,
+                num_class=num_classes,
+                device=device)
 
+    if model is None:
+        print("Model setup failed.")
+        return
 
-def get_slide_windows(frames, window_size, stride=1):
-    indices = torch.arange(0, frames.shape[0])
-    window_indices = indices.unfold(0, window_size, stride)
+    Eval(model=model,
+        dataloader=val_dataloader,
+        num_class=num_classes,
+        device=device)
 
-    return frames[window_indices, :, :, :].transpose(1, 2)
 if __name__ == '__main__':
     mode = 'rgb'
-    num_classes = 2000
-    save_model = 'checkpoints/'
-
     root = 'data/WLASL2000'
-
-    train_split = 'preprocess/nslt_{}.json'.format(num_classes)
-    weights = 'checkpoints/NSLT_2000_0.74258.pt' #best 74.26%
-    run(mode=mode, root=root, save_model=save_model, train_split=train_split, weights=weights)
+    train_split = 'configfiles/data_split.json'
+    weights = 'weights/NSLT_2000_0.74258.pt' #best 76.22%
+    run(mode=mode, root=root, train_split=train_split, weights=weights)

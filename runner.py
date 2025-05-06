@@ -33,7 +33,6 @@ def generate_sentence(words):
             }),
             timeout=30
         )
-        
         response.raise_for_status()
         result = response.json()
         return result['choices'][0]['message']['content']
@@ -169,7 +168,7 @@ def prediction_stream(model, label_map, target_framerate=15, record_duration=2.0
 
 if __name__ == "__main__":
     weights_path = "./weights/NSLT_2000_0.74258.pt"
-    label_map_path = "./preprocess/wlasl_class_list.txt"
+    label_map_path = "class_list.txt"
 
     if not os.path.exists(label_map_path):
         print(f"Error: Label file not found at {label_map_path}")
