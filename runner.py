@@ -168,7 +168,7 @@ def prediction_stream(model, label_map, target_framerate=15, record_duration=2.0
     cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-    weights_path = "./weights/NSLT_2000_0.74258.pt"
+    weights_path = "./weights/SLT_2000_0.7425.pt"
     label_map_path = "class_list.txt"
 
     if not os.path.exists(label_map_path):
