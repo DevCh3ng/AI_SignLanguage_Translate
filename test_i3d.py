@@ -112,7 +112,7 @@ def run(mode='', root='', train_split='', weights=''):
 
 if __name__ == '__main__':
     mode = 'rgb'
-    root = 'data/WLASL2000'
+    root = 'data/'
     train_split = 'configfiles/data_split.json'
     weights = 'weights/SLT_2000_0.7425.pt' 
     run(mode=mode, root=root, train_split=train_split, weights=weights)
